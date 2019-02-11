@@ -29,7 +29,8 @@
  * @license BSD http://silverstripe.org/bsd-license/
  */
 class QueuedJobDescriptor extends DataObject {
-	/**
+
+    /**
 	 * @var array
 	 */
 	private static $db = array(
@@ -48,6 +49,7 @@ class QueuedJobDescriptor extends DataObject {
 		'SavedJobMessages' => 'Text',
 		'JobStatus' => 'Varchar(16)',
 		'JobType' => 'Varchar(16)',
+        'ProcessGUID' => 'Varchar(36)',
 	);
 
 	/**
