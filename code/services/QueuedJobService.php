@@ -512,6 +512,8 @@ class QueuedJobService {
 
 		} catch(Exception $e) {
 		    echo '[' . date('Y-m-d H:i:s') . "] - Queued Jobs - Error {$e->getMessage()} {$jobDescriptor->ID} \n";
+		    DB::get_conn()->transactionRollback();
+		    DB::get_conn()->transactionEnd();
 			return false;
 		}
 	}
