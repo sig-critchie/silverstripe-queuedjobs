@@ -292,12 +292,15 @@ class QueuedJobService
         $type = $type ?: QueuedJob::QUEUED;
         $list = QueuedJobDescriptor::get()
             ->filter('JobType', $type)
+            ->where('ProcessGUID IS NULL')
             ->sort('ID', 'ASC');
 
         // see if there's any blocked jobs that need to be resumed
         $waitingJob = $list
             ->filter('JobStatus', QueuedJob::STATUS_WAIT)
+            ->where('ProcessGUID IS NULL')
             ->first();
+
         if ($waitingJob) {
             return $waitingJob;
         }
@@ -306,7 +309,9 @@ class QueuedJobService
         // that we're still executing
         $runningJob = $list
             ->filter('JobStatus', [QueuedJob::STATUS_INIT, QueuedJob::STATUS_RUN])
+            ->where('ProcessGUID IS NULL')
             ->first();
+
         if ($runningJob) {
             return false;
         }
@@ -314,6 +319,7 @@ class QueuedJobService
         // Otherwise, lets find any 'new' jobs that are waiting to execute
         $newJob = $list
             ->filter('JobStatus', QueuedJob::STATUS_NEW)
+            ->where('ProcessGUID IS NULL')
             ->where(sprintf(
                 '"StartAfter" < \'%s\' OR "StartAfter" IS NULL',
                 DBDatetime::now()->getValue()
@@ -570,20 +576,48 @@ class QueuedJobService
         // This deliberately does not use write() as that would always update LastEdited
         // and thus the row would always be affected.
         try {
+            // Start a transaction which will hold until we have a lock on this descriptor.
+            DB::get_conn()->transactionStart();
+            $row = DB::query(
+                sprintf(
+                    "SELECT ID, UUID() as mutex, ProcessGUID FROM QueuedJobDescriptor WHERE \"ID\" = %s AND ProcessGUID IS NULL FOR UPDATE",
+                    $jobDescriptor->ID
+                )
+            )->first();
+
+            // If the row is not returned, then it was reserved by another thread instead.
+            if (!isset($row['mutex'])) {
+                throw new Exception("Obtaining mutex failed (job locked to another thread)");
+            }
+            $mutex = $row['mutex'];
+
+            // otherwise reserve this row.
             DB::query(sprintf(
-                'UPDATE "QueuedJobDescriptor" SET "JobStatus" = \'%s\' WHERE "ID" = %s',
+                'UPDATE "QueuedJobDescriptor" SET "JobStatus" = \'%s\' , "ProcessGUID" = \'%s\' WHERE "ID" = %s',
                 QueuedJob::STATUS_INIT,
+                $mutex,
                 $jobDescriptor->ID
             ));
+
+            // make sure we've got our row, and everything is fine.
+            $row = DB::query(
+                sprintf("SELECT ID, ProcessGUID FROM QueuedJobDescriptor WHERE \"ID\" = %s", $jobDescriptor->ID)
+            )->first();
+
+            DB::get_conn()->transactionEnd();
+
+            // if the job status isn't initialising, or we found a process id different to the one we should.
+            if (!$row && ($jobDescriptor->JobStatus !== QueuedJob::STATUS_INIT || $row['ProcessGUID'] != $mutex)) {
+                throw new Exception("Wrong status or process. Job reserved already");
+            }
+            return true;
+
         } catch (Exception $e) {
+            echo '[' . date('Y-m-d H:i:s') . "] - Queued Jobs - Error {$e->getMessage()} {$jobDescriptor->ID} \n";
+            DB::get_conn()->transactionRollback();
+		    DB::get_conn()->transactionEnd();
             return false;
         }
-
-        if (DB::get_conn()->affectedRows() === 0 && $jobDescriptor->JobStatus !== QueuedJob::STATUS_INIT) {
-            return false;
-        }
-
-        return true;
     }
 
     /**
@@ -820,6 +854,8 @@ class QueuedJobService
 
                 // a last final save. The job is complete by now
                 if ($jobDescriptor) {
+                    // reset the process GUID since we're finished
+                    $jobDescriptor->ProcessGUID = null;
                     $jobDescriptor->write();
                 }
 
@@ -1104,7 +1140,6 @@ class QueuedJobService
     {
         // Start timer to measure lifetime
         $this->markStarted();
-
         // Begin main loop
         do {
             if (class_exists(Subsite::class)) {
@@ -1125,7 +1160,6 @@ class QueuedJobService
             }
         } while ($job);
     }
-
     /**
      * When PHP shuts down, we want to process all of the immediate queue items
      *
