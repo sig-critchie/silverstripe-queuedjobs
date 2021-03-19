@@ -9,7 +9,6 @@ use SilverStripe\Control\Director;
 use SilverStripe\Control\Email\Email;
 use SilverStripe\Core\Config\Config;
 use SilverStripe\Core\Config\Configurable;
-use SilverStripe\Core\Convert;
 use SilverStripe\Core\Extensible;
 use SilverStripe\Core\Injector\Injectable;
 use SilverStripe\Core\Injector\Injector;
@@ -593,10 +592,13 @@ class QueuedJobService
 
             // otherwise reserve this row.
             DB::query(sprintf(
-                'UPDATE "QueuedJobDescriptor" SET "JobStatus" = \'%s\' , "ProcessGUID" = \'%s\' WHERE "ID" = %s',
+                'UPDATE "QueuedJobDescriptor" SET "JobStatus" = \'%s\' , "ProcessGUID" = \'%s\' WHERE "ID" = %s'
+                . ' AND "JobFinished" IS NULL AND "JobStatus" NOT IN (%s)',
                 QueuedJob::STATUS_INIT,
                 $mutex,
-                $jobDescriptor->ID
+                $jobDescriptor->ID,
+                "'" . QueuedJob::STATUS_RUN . "', '" . QueuedJob::STATUS_COMPLETE . "', '"
+                . QueuedJob::STATUS_PAUSED . "', '" . QueuedJob::STATUS_CANCELLED . "'"
             ));
 
             // make sure we've got our row, and everything is fine.
